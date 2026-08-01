@@ -84,6 +84,7 @@ export class BaileysConnection {
   private LOGGER_OMIT_KEYS: ReadonlyArray<string> = [
     "qr",
     "qrDataUrl",
+    "pairingCode",
     "fileSha256",
     "jpegThumbnail",
     "fileEncSha256",
@@ -163,6 +164,13 @@ export class BaileysConnection {
   private _lastTrafficAt: number | null = null;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
+  private usePairingCode: boolean;
+  // The code issued for the CURRENT socket, or null when none was requested
+  // yet. WhatsApp binds the code to the socket's registration attempt, so it is
+  // cleared on every connect() and requested at most once per socket — a fresh
+  // code on each QR ref rotation (~20s) would invalidate the one the user is
+  // still typing into their phone.
+  private pairingCode: string | null = null;
   private _apiKeyHash: string | null;
   private groupActivityMap: Map<
     string,
@@ -189,6 +197,7 @@ export class BaileysConnection {
     this.syncFullHistory = options.syncFullHistory ?? false;
     this.groupsEnabled = options.groupsEnabled ?? true;
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
+    this.usePairingCode = options.usePairingCode ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
     this.leaseEpoch = options.leaseEpoch ?? null;
   }
@@ -246,6 +255,7 @@ export class BaileysConnection {
     }
 
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
+    this.usePairingCode = options.usePairingCode ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
     // A reused connection may have been re-leased under a newer epoch (e.g. a
     // force-acquire on POST /connections); stale epochs would get the
@@ -268,6 +278,7 @@ export class BaileysConnection {
       syncFullHistory: this.syncFullHistory,
       groupsEnabled: this.groupsEnabled,
       autoPresenceSubscribe: this.autoPresenceSubscribe,
+      usePairingCode: this.usePairingCode,
       apiKeyHash: this._apiKeyHash,
     });
   }
@@ -285,6 +296,7 @@ export class BaileysConnection {
       syncFullHistory: this.syncFullHistory,
       groupsEnabled: this.groupsEnabled,
       autoPresenceSubscribe: this.autoPresenceSubscribe,
+      usePairingCode: this.usePairingCode,
       apiKeyHash: this._apiKeyHash,
     });
     // Re-check after each await — discard() may have run while we were
@@ -338,6 +350,9 @@ export class BaileysConnection {
       shouldIgnoreJid,
       version,
     };
+
+    // A code from the previous socket is dead the moment that socket is gone.
+    this.pairingCode = null;
 
     try {
       this.socket = makeWASocket(socketOptions);
@@ -803,6 +818,40 @@ export class BaileysConnection {
     return this.socket;
   }
 
+  // Requests the pairing code once per socket and memoizes it, so every QR ref
+  // rotation re-delivers the SAME code to the client (the webhook is the only
+  // channel the code reaches the user through, and it must not change while
+  // they are typing it). Returns null when the request fails — the caller
+  // degrades to QR-only rather than failing the connection attempt.
+  private async ensurePairingCode(): Promise<string | null> {
+    if (this.pairingCode) {
+      return this.pairingCode;
+    }
+    if (!this.socket) {
+      return null;
+    }
+
+    try {
+      // Digits only: requestPairingCode feeds this straight into jidEncode.
+      const code = await this.socket.requestPairingCode(
+        this.phoneNumber.replace(/\D/g, ""),
+      );
+      this.pairingCode = code;
+      logger.info(
+        "[%s] [ensurePairingCode] pairing code issued",
+        this.phoneNumber,
+      );
+      return code;
+    } catch (error) {
+      logger.error(
+        "[%s] [ensurePairingCode] Failed to request pairing code, falling back to QR only: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return null;
+    }
+  }
+
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
     // A discarded connection must be inert. `socket.end()` fires a final
     // connection.update before the listeners are torn down; without this
@@ -972,6 +1021,17 @@ export class BaileysConnection {
         connection: "connecting",
         qrDataUrl: await toDataURL(qr),
       });
+
+      // Pairing-code linking rides along the QR flow: the code is requested on
+      // the first ref and stays valid while the refs keep rotating, so the
+      // client can offer both methods for the same connection attempt. A
+      // failed request is not fatal — the QR above still links the device.
+      if (this.usePairingCode) {
+        const pairingCode = await this.ensurePairingCode();
+        if (pairingCode) {
+          Object.assign(data, { pairingCode });
+        }
+      }
     }
 
     if (isOnline) {

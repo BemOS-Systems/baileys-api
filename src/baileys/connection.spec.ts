@@ -33,6 +33,7 @@ describe("BaileysConnection", () => {
     mockEventHandlers.clear();
     mockSocket.ev.on.mockClear();
     mockSocket.logout.mockClear();
+    mockSocket.requestPairingCode.mockClear();
     mockSocket.sendMessage.mockClear();
     mockSocket.sendPresenceUpdate.mockClear();
     mockSocket.readMessages.mockClear();
@@ -120,6 +121,99 @@ describe("BaileysConnection", () => {
       await connection.connect();
       // Should not register new listeners
       expect(mockSocket.ev.on.mock.calls.length).toBe(callCount);
+    });
+  });
+
+  describe("pairing code", () => {
+    let pairing: BaileysConnection;
+
+    const connectPairing = async () => {
+      pairing = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        usePairingCode: true,
+      });
+      await pairing.connect();
+      return mockEventHandlers.get("connection.update")!;
+    };
+
+    it("requests a code on the first qr and delivers it alongside the QR", async () => {
+      const handler = await connectPairing();
+      await handler({ qr: "qr-string-123" });
+
+      // Digits only — requestPairingCode feeds the value into jidEncode.
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledWith(
+        "5511999999999",
+      );
+      const body = JSON.parse(fetchCalls[0].body);
+      expect(body.data.connection).toBe("connecting");
+      expect(body.data.pairingCode).toBe("PAIR1234");
+      // Both linking methods stay live for the same attempt.
+      expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+    });
+
+    it("reuses the same code across qr ref rotations", async () => {
+      // WhatsApp rotates refs every ~20s. Issuing a new code each time would
+      // invalidate the one the user is still typing into their phone.
+      const handler = await connectPairing();
+      await handler({ qr: "ref-1" });
+      await handler({ qr: "ref-2" });
+      await handler({ qr: "ref-3" });
+
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledTimes(1);
+      const codes = fetchCalls.map((c) => JSON.parse(c.body).data.pairingCode);
+      expect(codes).toEqual(["PAIR1234", "PAIR1234", "PAIR1234"]);
+    });
+
+    it("issues a fresh code for a new socket", async () => {
+      // A code is bound to the socket's registration attempt; once that socket
+      // is gone the code is dead and the reconnect must issue another one.
+      const handler = await connectPairing();
+      await handler({ qr: "ref-1" });
+
+      (pairing as any).socket = null;
+      await pairing.connect();
+      const newHandler = mockEventHandlers.get("connection.update")!;
+      mockSocket.requestPairingCode.mockResolvedValueOnce("PAIR5678");
+      await newHandler({ qr: "ref-2" });
+
+      expect(
+        JSON.parse(fetchCalls[fetchCalls.length - 1].body).data.pairingCode,
+      ).toBe("PAIR5678");
+    });
+
+    it("falls back to QR only when the code request fails", async () => {
+      const handler = await connectPairing();
+      mockSocket.requestPairingCode.mockRejectedValueOnce(
+        new Error("Connection Closed"),
+      );
+      await handler({ qr: "qr-string-123" });
+
+      const body = JSON.parse(fetchCalls[0].body);
+      expect(body.data.pairingCode).toBeUndefined();
+      expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+      expect(body.data.connection).toBe("connecting");
+    });
+
+    it("retries the request on the next qr after a failure", async () => {
+      const handler = await connectPairing();
+      mockSocket.requestPairingCode.mockRejectedValueOnce(
+        new Error("Connection Closed"),
+      );
+      await handler({ qr: "ref-1" });
+      await handler({ qr: "ref-2" });
+
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledTimes(2);
+      expect(
+        JSON.parse(fetchCalls[fetchCalls.length - 1].body).data.pairingCode,
+      ).toBe("PAIR1234");
+    });
+
+    it("persists the choice in the connection metadata", async () => {
+      await connectPairing();
+      const stored = (redis as any).__hashData
+        .get("@baileys-api:connections:+5511999999999:authState")
+        ?.get("metadata");
+      expect(stored).toContain('"usePairingCode":true');
     });
   });
 
@@ -1343,6 +1437,14 @@ describe("BaileysConnection", () => {
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.data.connection).toBe("connecting");
         expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+      });
+
+      it("does not request a pairing code when usePairingCode is off", async () => {
+        const handler = mockEventHandlers.get("connection.update")!;
+        await handler({ qr: "qr-string-123" });
+
+        expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+        expect(JSON.parse(fetchCalls[0].body).data.pairingCode).toBeUndefined();
       });
 
       it("sends open state and resets reconnect count", async () => {

@@ -12,6 +12,13 @@ export interface BaileysConnectionOptions {
   syncFullHistory?: boolean;
   groupsEnabled?: boolean;
   autoPresenceSubscribe?: boolean;
+  // Link the device with an 8-character pairing code instead of (in addition
+  // to) scanning the QR. The code is requested from WhatsApp on the first `qr`
+  // event of each socket — that is the earliest point the Noise handshake is
+  // complete and a node can be sent — and delivered on the same
+  // connection.update webhook as `pairingCode`. QR refs keep rotating
+  // meanwhile, so both linking methods stay live for the whole attempt.
+  usePairingCode?: boolean;
   apiKeyHash?: string;
   isReconnect?: boolean;
   // Import/takeover: discard any live socket and spawn a fresh one so the newly
@@ -38,7 +45,10 @@ export interface BaileysConnectionWebhookPayload {
   // client can discard late events from a previous owner.
   data:
     | BaileysEventMap[keyof BaileysEventMap]
-    | (BaileysEventMap["connection.update"] & { epoch?: number })
+    | (BaileysEventMap["connection.update"] & {
+        epoch?: number;
+        pairingCode?: string;
+      })
     | {
         error: string;
         // Present on reconnect_loop_detected when the phone entered

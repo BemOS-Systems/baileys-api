@@ -410,6 +410,7 @@ function createMockSocket() {
       removeAllListeners: mock(() => {}),
     },
     logout: mock(async () => {}),
+    requestPairingCode: mock(async () => "PAIR1234"),
     sendMessage: mock(async () => ({ key: { id: "sent-1" } })),
     sendPresenceUpdate: mock(async () => {}),
     readMessages: mock(async () => {}),
