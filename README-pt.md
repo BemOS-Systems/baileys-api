@@ -46,6 +46,8 @@ A API expõe os seguintes endpoints. Tenha em mente que este projeto está em de
 > [!IMPORTANT]
 > O parâmetro `phoneNumber` na URL deve estar no formato `+<codigo_do_pais><telefone>`, ex: `+551234567890`.
 
+Por padrão os dispositivos são conectados por QR code. Envie `usePairingCode: true` no `POST /connections/:phoneNumber` para também receber o código de 8 caracteres do WhatsApp ("Conectar com número de telefone") — ele chega no webhook `connection.update` como `pairingCode`, junto com `qrDataUrl`, e os dois métodos conectam a mesma tentativa. O código é emitido uma vez por socket e continua válido enquanto os refs do QR são rotacionados; uma reconexão emite um novo.
+
 ### Admin
 
 - `POST /admin/connections/logout-all`: Faz logout de todas as conexões WhatsApp ativas. (Requer chave de API com função de administrador)
