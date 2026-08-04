@@ -208,6 +208,23 @@ describe("BaileysConnection", () => {
       ).toBe("PAIR1234");
     });
 
+    it("slows the qr rotation so the code outlives the manual entry flow", async () => {
+      // The code dies with the socket, and the socket dies with its QR refs.
+      // At the default ~20s rotation the user has ~2 minutes to type the code;
+      // 60s per ref stretches the same refs to ~6.
+      await connectPairing();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.qrTimeout).toBe(60_000);
+    });
+
+    it("keeps the default qr clock for QR-only linking", async () => {
+      await connection.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.qrTimeout).toBeUndefined();
+    });
+
     it("persists the choice in the connection metadata", async () => {
       await connectPairing();
       const stored = (redis as any).__hashData

@@ -349,6 +349,14 @@ export class BaileysConnection {
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
       version,
+      // The socket only lives as long as its QR refs, and the pairing code
+      // dies with the socket. The default rotation (~20s × ~6 refs) gives the
+      // user barely 2 minutes to leave the page, open WhatsApp and type the
+      // code — too short for the manual flow. Rotating slower stretches the
+      // same refs to ~6 minutes; the code is memoized per socket, so it stays
+      // the one on screen the whole time. Left at the default for QR linking,
+      // where a stale ref means a stale QR on screen.
+      ...(this.usePairingCode ? { qrTimeout: 60_000 } : {}),
     };
 
     // A code from the previous socket is dead the moment that socket is gone.
