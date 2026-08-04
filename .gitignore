@@ -50,3 +50,7 @@ media/*
 !media/.keep
 
 *.lock
+
+# Cost-tracking config for the billing scaffolder — rates and client are
+# per-developer, so each clone keeps its own instead of sharing one.
+.billing.yaml
