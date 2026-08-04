@@ -1,0 +1,24 @@
+client: Personal
+client_id: self
+rates:
+  cpu_hours: 0.25
+  development_hours: 50.0
+  storage_gb: 0.1
+  api_calls: 0.001
+  gpu_hours: 2.5
+urls: []
+processes: []
+tracked_commands:
+- git
+- docker
+- npm
+- python
+- pip
+- make
+- cargo
+- curl
+- wget
+- systemctl
+- journalctl
+name: bemos-plat-baileys-api
+description: bemos-plat-baileys-api
