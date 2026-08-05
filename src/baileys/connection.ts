@@ -345,7 +345,16 @@ export class BaileysConnection {
       },
       markOnlineOnConnect: false,
       logger: baileysLogger,
-      browser: Browsers.windows(this.clientName),
+      // Pairing-code linking registers the companion through WhatsApp's
+      // link_code flow, which carries a companion_platform_id derived from the
+      // browser NAME. Any name outside Baileys' browser map ("BemOS") becomes
+      // OTHER_WEB_CLIENT, and WhatsApp then kills the link right after the
+      // user enters the code — the code is accepted, the login that follows is
+      // terminated and the session logged out. QR linking never goes through
+      // that registration, so it keeps the branded name.
+      browser: this.usePairingCode
+        ? Browsers.windows("Chrome")
+        : Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
       version,
@@ -1010,6 +1019,16 @@ export class BaileysConnection {
         this.connect();
         return;
       }
+      // Terminal close: this wipes the auth state and removes the connection.
+      // Logged at warn — this branch used to be silent, which made a
+      // post-pairing logout (WhatsApp rejecting the freshly linked device)
+      // indistinguishable from a clean shutdown in production logs.
+      logger.warn(
+        "[%s] [handleConnectionUpdate] connection closed terminally (statusCode=%s, message=%s), clearing auth state",
+        this.phoneNumber,
+        String(statusCode ?? "unknown"),
+        message ?? "",
+      );
       await this.close();
     }
 

@@ -225,6 +225,33 @@ describe("BaileysConnection", () => {
       expect(options.qrTimeout).toBeUndefined();
     });
 
+    it("identifies as a real browser, not the branded client name", async () => {
+      // link_code registration sends a companion_platform_id derived from the
+      // browser name; anything outside Baileys' browser map becomes
+      // OTHER_WEB_CLIENT and WhatsApp drops the link right after the user
+      // enters the code.
+      pairing = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        usePairingCode: true,
+        clientName: "BemOS",
+      });
+      await pairing.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.browser[1]).toBe("Chrome");
+    });
+
+    it("keeps the branded client name for QR-only linking", async () => {
+      const qrOnly = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        clientName: "BemOS",
+      });
+      await qrOnly.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.browser[1]).toBe("BemOS");
+    });
+
     it("persists the choice in the connection metadata", async () => {
       await connectPairing();
       const stored = (redis as any).__hashData
