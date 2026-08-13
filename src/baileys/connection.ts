@@ -22,8 +22,8 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
-import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import { samePhoneNumber } from "@/baileys/helpers/samePhoneNumber";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
 import {
   advanceImportCandidate,
@@ -1033,12 +1033,20 @@ export class BaileysConnection {
     }
 
     if (connection === "open" && this.socket?.user?.id) {
-      const phoneNumberFromId = `+${this.socket.user.id.split("@")[0].split(":")[0]}`;
-      if (
-        normalizeBrazilPhoneNumber(phoneNumberFromId) !==
-        normalizeBrazilPhoneNumber(this.phoneNumber)
-      ) {
-        this.handleWrongPhoneNumber();
+      const linked = await this.resolveLinkedPhoneNumber();
+      // Unresolvable identity is NOT a mismatch. WhatsApp is LID-first: on such
+      // a session `user.id` is an opaque `@lid` with no phone number behind it
+      // until the mapping arrives, so treating "unknown" as "wrong" condemns
+      // every freshly linked device. Fail open and say so in the logs.
+      if (linked === null) {
+        logger.warn(
+          "[%s] [handleConnectionUpdate] could not resolve the linked identity to a phone number (user.id=%s, user.lid=%s) — skipping the mismatch check",
+          this.phoneNumber,
+          this.socket.user.id,
+          String((this.socket.user as { lid?: string }).lid ?? "<none>"),
+        );
+      } else if (!samePhoneNumber(linked, this.phoneNumber)) {
+        this.handleWrongPhoneNumber(linked);
         return;
       }
     }
@@ -1301,21 +1309,86 @@ export class BaileysConnection {
     });
   }
 
-  private handleWrongPhoneNumber() {
+  /**
+   * The phone number of the device that actually linked, or null when it cannot
+   * be determined yet.
+   *
+   * `user.id` is only a phone number on PN-primary sessions. On LID-primary
+   * ones it is an opaque identity that has to go through the LID -> PN mapping,
+   * which may not be populated at the moment the connection opens. `user.lid`
+   * is the mirror of whichever one `user.id` is not, so it is worth a second
+   * attempt before giving up.
+   */
+  private async resolveLinkedPhoneNumber(): Promise<string | null> {
+    const user = this.socket?.user as
+      | { id?: string; lid?: string; phoneNumber?: string }
+      | undefined;
+    if (!user) return null;
+
+    // Baileys exposes the PN directly on newer sessions — cheapest and most
+    // authoritative source, no mapping lookup involved.
+    if (user.phoneNumber) return this.toPhoneNumber(user.phoneNumber);
+
+    for (const jid of [user.id, user.lid]) {
+      if (!jid) continue;
+      try {
+        const pn = await this.resolveToPN(this.stripDevice(jid));
+        // resolveToPN returns non-@lid input unchanged, so a @lid coming back
+        // means the mapping had nothing for it — not a phone number.
+        if (pn && !pn.endsWith("@lid")) return this.toPhoneNumber(pn);
+      } catch (error) {
+        logger.debug(
+          "[%s] [resolveLinkedPhoneNumber] %s did not resolve: %s",
+          this.phoneNumber,
+          jid,
+          errorToString(error),
+        );
+      }
+    }
+    return null;
+  }
+
+  private stripDevice(jid: string): string {
+    const [user, domain] = jid.split("@");
+    return domain ? `${user.split(":")[0]}@${domain}` : user.split(":")[0];
+  }
+
+  private toPhoneNumber(jid: string): string {
+    return `+${this.stripDevice(jid).split("@")[0].replace(/\D/g, "")}`;
+  }
+
+  /**
+   * Report the discrepancy WITHOUT tearing the session down.
+   *
+   * This used to log the device out on the spot, which destroyed a link the
+   * user had just successfully completed and left them rescanning forever with
+   * no way out. The session now stays up and the decision belongs upstream:
+   * adopt the linked number, or disconnect and link the right device. Both
+   * arrive as ordinary requests.
+   *
+   * `connection` is sent explicitly because the consumer carries forward its
+   * last-known value for any field this payload omits — omitting it here left
+   * the channel persisted as connected while the socket was being closed.
+   */
+  private handleWrongPhoneNumber(linkedPhoneNumber: string) {
+    logger.warn(
+      "[%s] [handleWrongPhoneNumber] linked device is %s, which is not the configured number — reporting without disconnecting",
+      this.phoneNumber,
+      linkedPhoneNumber,
+    );
     this.sendToWebhook({
       event: "connection.update",
-      data: { error: "wrong_phone_number" },
+      data: {
+        connection: "open",
+        error: "wrong_phone_number",
+        linkedPhoneNumber,
+        configuredPhoneNumber: this.phoneNumber,
+      } as BaileysEventMap["connection.update"] & {
+        error: string;
+        linkedPhoneNumber: string;
+        configuredPhoneNumber: string;
+      },
     });
-    this.socket?.ev.removeAllListeners("connection.update");
-    // Route teardown through the handler so the logout participates in
-    // inFlightOps (serializes with any concurrent connect/logout/discard for
-    // this number). Falls back to a direct logout when no handler wired a
-    // callback (e.g. a standalone BaileysConnection). See issue #313.
-    if (this.requestLogout) {
-      this.requestLogout();
-    } else {
-      this.logout();
-    }
   }
 
   private async handleReconnecting() {

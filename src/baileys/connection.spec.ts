@@ -332,7 +332,10 @@ describe("BaileysConnection", () => {
   describe("wrong phone number", () => {
     const wrongUserId = "5511888888888:0@s.whatsapp.net";
 
-    it("routes teardown through requestLogout when the handler wired one", async () => {
+    const wrongPhoneCall = () =>
+      fetchCalls.find((c) => c.body?.includes('"error":"wrong_phone_number"'));
+
+    it("reports the mismatch without tearing the session down", async () => {
       const requestLogout = mock(() => {});
       const conn = new BaileysConnection("+5511999999999", {
         ...defaultOptions,
@@ -346,32 +349,66 @@ describe("BaileysConnection", () => {
 
       await handler({ connection: "open" });
 
-      // The wrong-phone webhook fired...
-      expect(
-        fetchCalls.some((c) =>
-          c.body?.includes('"error":"wrong_phone_number"'),
-        ),
-      ).toBe(true);
-      // ...and teardown was delegated to the handler, NOT a direct socket logout.
-      expect(requestLogout).toHaveBeenCalledTimes(1);
+      // The link the user just completed survives: the discrepancy is reported
+      // upstream and the decision (adopt / disconnect) is made there.
+      const call = wrongPhoneCall();
+      expect(call).toBeDefined();
+      expect(requestLogout).not.toHaveBeenCalled();
       expect(mockSocket.logout).not.toHaveBeenCalled();
     });
 
-    it("falls back to a direct logout when no requestLogout is wired", async () => {
+    it("names both numbers and an explicit connection in the payload", async () => {
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
       mockSocket.user = { id: wrongUserId };
+
+      await handler({ connection: "open" });
+
+      const body = JSON.parse(wrongPhoneCall()!.body!);
+      expect(body.data.linkedPhoneNumber).toBe("+5511888888888");
+      expect(body.data.configuredPhoneNumber).toBe(connection.phoneNumber);
+      // Explicit, so the consumer cannot carry a stale value forward.
+      expect(body.data.connection).toBe("open");
+    });
+
+    it("does not flag a mismatch when WhatsApp drops the Brazilian 9th digit", async () => {
+      const conn = new BaileysConnection("+5511987654321", defaultOptions);
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      // Legacy 8-digit registration for the very same line.
+      mockSocket.user = { id: "551187654321:0@s.whatsapp.net" };
+
+      await handler({ connection: "open" });
+
+      expect(wrongPhoneCall()).toBeUndefined();
+    });
+
+    it("resolves a LID identity to its phone number before comparing", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        "5511999999999@s.whatsapp.net",
+      );
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      // LID-primary session: user.id carries no phone number at all.
+      mockSocket.user = { id: "123456789012345:1@lid" };
+
+      await handler({ connection: "open" });
+
+      expect(wrongPhoneCall()).toBeUndefined();
+    });
+
+    it("skips the check when the identity cannot be resolved to a number", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValue(null);
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      mockSocket.user = { id: "123456789012345:1@lid" };
       mockSocket.logout.mockClear();
 
       await handler({ connection: "open" });
 
-      expect(
-        fetchCalls.some((c) =>
-          c.body?.includes('"error":"wrong_phone_number"'),
-        ),
-      ).toBe(true);
-      // No handler wired -> direct connection.logout() -> socket.logout().
-      expect(mockSocket.logout).toHaveBeenCalledTimes(1);
+      // Unknown is not wrong: an unmapped LID must never condemn a live link.
+      expect(wrongPhoneCall()).toBeUndefined();
+      expect(mockSocket.logout).not.toHaveBeenCalled();
     });
   });
 
