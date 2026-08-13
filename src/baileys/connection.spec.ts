@@ -33,6 +33,7 @@ describe("BaileysConnection", () => {
     mockEventHandlers.clear();
     mockSocket.ev.on.mockClear();
     mockSocket.logout.mockClear();
+    mockSocket.requestPairingCode.mockClear();
     mockSocket.sendMessage.mockClear();
     mockSocket.sendPresenceUpdate.mockClear();
     mockSocket.readMessages.mockClear();
@@ -123,6 +124,143 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("pairing code", () => {
+    let pairing: BaileysConnection;
+
+    const connectPairing = async () => {
+      pairing = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        usePairingCode: true,
+      });
+      await pairing.connect();
+      return mockEventHandlers.get("connection.update")!;
+    };
+
+    it("requests a code on the first qr and delivers it alongside the QR", async () => {
+      const handler = await connectPairing();
+      await handler({ qr: "qr-string-123" });
+
+      // Digits only — requestPairingCode feeds the value into jidEncode.
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledWith(
+        "5511999999999",
+      );
+      const body = JSON.parse(fetchCalls[0].body);
+      expect(body.data.connection).toBe("connecting");
+      expect(body.data.pairingCode).toBe("PAIR1234");
+      // Both linking methods stay live for the same attempt.
+      expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+    });
+
+    it("reuses the same code across qr ref rotations", async () => {
+      // WhatsApp rotates refs every ~20s. Issuing a new code each time would
+      // invalidate the one the user is still typing into their phone.
+      const handler = await connectPairing();
+      await handler({ qr: "ref-1" });
+      await handler({ qr: "ref-2" });
+      await handler({ qr: "ref-3" });
+
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledTimes(1);
+      const codes = fetchCalls.map((c) => JSON.parse(c.body).data.pairingCode);
+      expect(codes).toEqual(["PAIR1234", "PAIR1234", "PAIR1234"]);
+    });
+
+    it("issues a fresh code for a new socket", async () => {
+      // A code is bound to the socket's registration attempt; once that socket
+      // is gone the code is dead and the reconnect must issue another one.
+      const handler = await connectPairing();
+      await handler({ qr: "ref-1" });
+
+      (pairing as any).socket = null;
+      await pairing.connect();
+      const newHandler = mockEventHandlers.get("connection.update")!;
+      mockSocket.requestPairingCode.mockResolvedValueOnce("PAIR5678");
+      await newHandler({ qr: "ref-2" });
+
+      expect(
+        JSON.parse(fetchCalls[fetchCalls.length - 1].body).data.pairingCode,
+      ).toBe("PAIR5678");
+    });
+
+    it("falls back to QR only when the code request fails", async () => {
+      const handler = await connectPairing();
+      mockSocket.requestPairingCode.mockRejectedValueOnce(
+        new Error("Connection Closed"),
+      );
+      await handler({ qr: "qr-string-123" });
+
+      const body = JSON.parse(fetchCalls[0].body);
+      expect(body.data.pairingCode).toBeUndefined();
+      expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+      expect(body.data.connection).toBe("connecting");
+    });
+
+    it("retries the request on the next qr after a failure", async () => {
+      const handler = await connectPairing();
+      mockSocket.requestPairingCode.mockRejectedValueOnce(
+        new Error("Connection Closed"),
+      );
+      await handler({ qr: "ref-1" });
+      await handler({ qr: "ref-2" });
+
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledTimes(2);
+      expect(
+        JSON.parse(fetchCalls[fetchCalls.length - 1].body).data.pairingCode,
+      ).toBe("PAIR1234");
+    });
+
+    it("slows the qr rotation so the code outlives the manual entry flow", async () => {
+      // The code dies with the socket, and the socket dies with its QR refs.
+      // At the default ~20s rotation the user has ~2 minutes to type the code;
+      // 60s per ref stretches the same refs to ~6.
+      await connectPairing();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.qrTimeout).toBe(60_000);
+    });
+
+    it("keeps the default qr clock for QR-only linking", async () => {
+      await connection.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.qrTimeout).toBeUndefined();
+    });
+
+    it("identifies as a real browser, not the branded client name", async () => {
+      // link_code registration sends a companion_platform_id derived from the
+      // browser name; anything outside Baileys' browser map becomes
+      // OTHER_WEB_CLIENT and WhatsApp drops the link right after the user
+      // enters the code.
+      pairing = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        usePairingCode: true,
+        clientName: "BemOS",
+      });
+      await pairing.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.browser[1]).toBe("Chrome");
+    });
+
+    it("keeps the branded client name for QR-only linking", async () => {
+      const qrOnly = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        clientName: "BemOS",
+      });
+      await qrOnly.connect();
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const options = makeSocket.mock.calls.at(-1)?.[0];
+      expect(options.browser[1]).toBe("BemOS");
+    });
+
+    it("persists the choice in the connection metadata", async () => {
+      await connectPairing();
+      const stored = (redis as any).__hashData
+        .get("@baileys-api:connections:+5511999999999:authState")
+        ?.get("metadata");
+      expect(stored).toContain('"usePairingCode":true');
+    });
+  });
+
   describe("#logout", () => {
     it("completes without throwing even when not connected (error is caught internally)", async () => {
       // logout() catches safeSocket() errors internally
@@ -194,7 +332,10 @@ describe("BaileysConnection", () => {
   describe("wrong phone number", () => {
     const wrongUserId = "5511888888888:0@s.whatsapp.net";
 
-    it("routes teardown through requestLogout when the handler wired one", async () => {
+    const wrongPhoneCall = () =>
+      fetchCalls.find((c) => c.body?.includes('"error":"wrong_phone_number"'));
+
+    it("reports the mismatch without tearing the session down", async () => {
       const requestLogout = mock(() => {});
       const conn = new BaileysConnection("+5511999999999", {
         ...defaultOptions,
@@ -208,32 +349,66 @@ describe("BaileysConnection", () => {
 
       await handler({ connection: "open" });
 
-      // The wrong-phone webhook fired...
-      expect(
-        fetchCalls.some((c) =>
-          c.body?.includes('"error":"wrong_phone_number"'),
-        ),
-      ).toBe(true);
-      // ...and teardown was delegated to the handler, NOT a direct socket logout.
-      expect(requestLogout).toHaveBeenCalledTimes(1);
+      // The link the user just completed survives: the discrepancy is reported
+      // upstream and the decision (adopt / disconnect) is made there.
+      const call = wrongPhoneCall();
+      expect(call).toBeDefined();
+      expect(requestLogout).not.toHaveBeenCalled();
       expect(mockSocket.logout).not.toHaveBeenCalled();
     });
 
-    it("falls back to a direct logout when no requestLogout is wired", async () => {
+    it("names both numbers and an explicit connection in the payload", async () => {
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
       mockSocket.user = { id: wrongUserId };
+
+      await handler({ connection: "open" });
+
+      const body = JSON.parse(wrongPhoneCall()!.body!);
+      expect(body.data.linkedPhoneNumber).toBe("+5511888888888");
+      expect(body.data.configuredPhoneNumber).toBe(connection.phoneNumber);
+      // Explicit, so the consumer cannot carry a stale value forward.
+      expect(body.data.connection).toBe("open");
+    });
+
+    it("does not flag a mismatch when WhatsApp drops the Brazilian 9th digit", async () => {
+      const conn = new BaileysConnection("+5511987654321", defaultOptions);
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      // Legacy 8-digit registration for the very same line.
+      mockSocket.user = { id: "551187654321:0@s.whatsapp.net" };
+
+      await handler({ connection: "open" });
+
+      expect(wrongPhoneCall()).toBeUndefined();
+    });
+
+    it("resolves a LID identity to its phone number before comparing", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        "5511999999999@s.whatsapp.net",
+      );
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      // LID-primary session: user.id carries no phone number at all.
+      mockSocket.user = { id: "123456789012345:1@lid" };
+
+      await handler({ connection: "open" });
+
+      expect(wrongPhoneCall()).toBeUndefined();
+    });
+
+    it("skips the check when the identity cannot be resolved to a number", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValue(null);
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      mockSocket.user = { id: "123456789012345:1@lid" };
       mockSocket.logout.mockClear();
 
       await handler({ connection: "open" });
 
-      expect(
-        fetchCalls.some((c) =>
-          c.body?.includes('"error":"wrong_phone_number"'),
-        ),
-      ).toBe(true);
-      // No handler wired -> direct connection.logout() -> socket.logout().
-      expect(mockSocket.logout).toHaveBeenCalledTimes(1);
+      // Unknown is not wrong: an unmapped LID must never condemn a live link.
+      expect(wrongPhoneCall()).toBeUndefined();
+      expect(mockSocket.logout).not.toHaveBeenCalled();
     });
   });
 
@@ -1343,6 +1518,14 @@ describe("BaileysConnection", () => {
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.data.connection).toBe("connecting");
         expect(body.data.qrDataUrl).toBe("data:image/png;base64,qrcode");
+      });
+
+      it("does not request a pairing code when usePairingCode is off", async () => {
+        const handler = mockEventHandlers.get("connection.update")!;
+        await handler({ qr: "qr-string-123" });
+
+        expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+        expect(JSON.parse(fetchCalls[0].body).data.pairingCode).toBeUndefined();
       });
 
       it("sends open state and resets reconnect count", async () => {

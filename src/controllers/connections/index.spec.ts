@@ -62,6 +62,70 @@ describe("connectionsController send-message", () => {
   });
 });
 
+describe("connectionsController connect", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+  });
+
+  const connectRequest = (phone: string, body: Record<string, unknown>) =>
+    new Request(`http://localhost/connections/${phone}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        webhookUrl: "http://localhost:3026/whatsapp/+551234567890",
+        webhookVerifyToken: "verify",
+        ...body,
+      }),
+    });
+
+  it("forwards usePairingCode to the coordinator", async () => {
+    const spy = spyOn(coordinator, "connectWithLease").mockResolvedValue(
+      undefined,
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        connectRequest("+551234567890", { usePairingCode: true }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(spy).toHaveBeenCalledWith(
+        "+551234567890",
+        expect.objectContaining({ usePairingCode: true }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("defaults to QR-only when usePairingCode is omitted", async () => {
+    const spy = spyOn(coordinator, "connectWithLease").mockResolvedValue(
+      undefined,
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(connectRequest("+551234567890", {}));
+
+      expect(res.status).toBe(200);
+      // The schema default applies, so the connection is explicitly QR-only.
+      expect(spy.mock.calls[0][1].usePairingCode).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 // Read-only restriction diagnostics: fetch the 463 reach-out time-lock state
 // and the new-chat message cap without sending a message.
 describe("connectionsController restriction diagnostics", () => {

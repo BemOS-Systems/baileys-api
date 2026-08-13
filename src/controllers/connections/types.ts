@@ -142,6 +142,13 @@ export const connectionOptionsSchema = {
       default: false,
     }),
   ),
+  usePairingCode: t.Optional(
+    t.Boolean({
+      description:
+        "Also link the device with an 8-character pairing code (WhatsApp's 'Link with phone number' flow). The code is delivered on the connection.update webhook as `pairingCode`, alongside `qrDataUrl` — both methods link the same connection attempt.",
+      default: false,
+    }),
+  ),
 } as const;
 
 export const iMessageKey = t.Object({
