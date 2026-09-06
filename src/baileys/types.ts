@@ -2,6 +2,7 @@ import type {
   BaileysEventMap,
   MessageReceiptType,
   proto,
+  WAConnectionState,
 } from "@whiskeysockets/baileys";
 
 export interface DisconnectInfo {
@@ -9,6 +10,18 @@ export interface DisconnectInfo {
   statusCode: number | null;
   // Stable snake_case token derived from the code (never the Boom message).
   reason: string;
+}
+
+// What the socket is doing right now, as last reported to the webhook. Read
+// by GET /connections/:phoneNumber so a consumer that lost a webhook — or
+// never got one, because a healthy socket has nothing to report — can ask
+// instead of guessing.
+export interface ConnectionStateSnapshot {
+  // `reconnecting` is ours, not Baileys': WAConnectionState is only
+  // open/connecting/close, and the socket layer casts to it when it narrates
+  // a resume. The snapshot reports what actually goes over the webhook.
+  connection: WAConnectionState | "reconnecting" | null;
+  disconnect: DisconnectInfo | null;
 }
 
 export interface BaileysConnectionOptions {

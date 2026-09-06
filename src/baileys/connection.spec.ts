@@ -402,7 +402,9 @@ describe("BaileysConnection", () => {
     });
 
     it("skips the check when the identity cannot be resolved to a number", async () => {
-      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValue(null);
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValue(
+        null,
+      );
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
       mockSocket.user = { id: "123456789012345:1@lid" };
@@ -2192,6 +2194,24 @@ describe("BaileysConnection", () => {
       expect(closed?.data.disconnect).toEqual({
         statusCode: 401,
         reason: "logged_out",
+      });
+    });
+
+    it("remembers the state it last reported, and the reason with it", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      await handler(closeWith(440, "Stream Errored (conflict)"));
+      expect(connection.state).toEqual({
+        connection: "reconnecting",
+        disconnect: { statusCode: 440, reason: "connection_replaced" },
+      });
+
+      // A healthy open ends the outage; the reason that started it is history.
+      await handler({ connection: "open" as const });
+      expect(connection.state).toEqual({
+        connection: "open",
+        disconnect: null,
       });
     });
 
