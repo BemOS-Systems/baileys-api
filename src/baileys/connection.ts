@@ -34,6 +34,7 @@ import {
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
+  DisconnectInfo,
   MessageKeyWithId,
 } from "@/baileys/types";
 import { instanceId } from "@/cluster/identity";
@@ -78,6 +79,42 @@ export class BaileysConnectionForbiddenError extends Error {
   constructor() {
     super("Connection not owned by this API key");
   }
+}
+
+/*
+ * Why the socket closed, in a shape the consumer can act on.
+ *
+ * Baileys reports a close as a Boom error whose status code is the reason
+ * (`DisconnectReason`). Until now that code was only ever logged here; the
+ * webhook said `reconnecting` or `close` and nothing else, so the monolith
+ * could not tell a doctor who linked another device (440) from one WhatsApp
+ * logged out (401) from a phone that lost data (408). The name is a stable
+ * snake_case token — never the Boom message, which is free text.
+ */
+const DISCONNECT_REASONS: Record<number, string> = {
+  [DisconnectReason.loggedOut]: "logged_out",
+  [DisconnectReason.forbidden]: "forbidden",
+  [DisconnectReason.connectionLost]: "connection_lost",
+  [DisconnectReason.multideviceMismatch]: "multidevice_mismatch",
+  [DisconnectReason.connectionClosed]: "connection_closed",
+  [DisconnectReason.connectionReplaced]: "connection_replaced",
+  [DisconnectReason.badSession]: "bad_session",
+  [DisconnectReason.unavailableService]: "unavailable_service",
+  [DisconnectReason.restartRequired]: "restart_required",
+};
+
+export function disconnectInfo(
+  statusCode: number | undefined,
+  message: string | undefined,
+): DisconnectInfo {
+  if (message === "QR refs attempts ended") {
+    return { statusCode: statusCode ?? null, reason: "qr_refs_ended" };
+  }
+  return {
+    statusCode: statusCode ?? null,
+    reason:
+      (statusCode !== undefined && DISCONNECT_REASONS[statusCode]) || "unknown",
+  };
 }
 
 export class BaileysConnection {
@@ -928,6 +965,7 @@ export class BaileysConnection {
       const shouldReconnect =
         statusCode !== DisconnectReason.loggedOut &&
         message !== "QR refs attempts ended";
+      const disconnect = disconnectInfo(statusCode, message);
 
       if (shouldReconnect) {
         // Imported session with a wrong Noise candidate: the handshake fails
@@ -972,7 +1010,7 @@ export class BaileysConnection {
           // list longer than the guard threshold (10) aborts before reaching a
           // candidate past that index, and only a coordinator re-claim can resume it.
           this.reconnectCount = 0;
-          await this.handleReconnecting();
+          await this.handleReconnecting(disconnect);
           this.socket = null;
           this.connect();
           return;
@@ -998,7 +1036,7 @@ export class BaileysConnection {
           message ?? "",
           this.reconnectCount + 1,
         );
-        await this.handleReconnecting();
+        await this.handleReconnecting(disconnect);
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;
 
@@ -1030,6 +1068,10 @@ export class BaileysConnection {
         message ?? "",
       );
       await this.close();
+      // The terminal `close` below rides the raw event; give it the same
+      // explicit reason the reconnecting path carries, so the consumer reads
+      // one field for both.
+      Object.assign(data, { disconnect });
     }
 
     if (connection === "open" && this.socket?.user?.id) {
@@ -1391,7 +1433,7 @@ export class BaileysConnection {
     });
   }
 
-  private async handleReconnecting() {
+  private async handleReconnecting(disconnect?: DisconnectInfo) {
     this.reconnectCount += 1;
     if (this.reconnectCount > 10) {
       // abort() first and SYNCHRONOUSLY: with an await between the decision
@@ -1434,7 +1476,10 @@ export class BaileysConnection {
     }
     this.sendToWebhook({
       event: "connection.update",
-      data: { connection: "reconnecting" as WAConnectionState },
+      data: {
+        connection: "reconnecting" as WAConnectionState,
+        ...(disconnect && { disconnect }),
+      },
     });
   }
 

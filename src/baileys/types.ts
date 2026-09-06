@@ -4,6 +4,13 @@ import type {
   proto,
 } from "@whiskeysockets/baileys";
 
+export interface DisconnectInfo {
+  // Baileys' DisconnectReason status code, null when the close carried none.
+  statusCode: number | null;
+  // Stable snake_case token derived from the code (never the Boom message).
+  reason: string;
+}
+
 export interface BaileysConnectionOptions {
   clientName?: string;
   webhookUrl: string;
@@ -48,6 +55,9 @@ export interface BaileysConnectionWebhookPayload {
     | (BaileysEventMap["connection.update"] & {
         epoch?: number;
         pairingCode?: string;
+        // Why the socket closed, on `reconnecting` and on a terminal `close`.
+        // See disconnectInfo in connection.ts.
+        disconnect?: DisconnectInfo;
       })
     | {
         error: string;
