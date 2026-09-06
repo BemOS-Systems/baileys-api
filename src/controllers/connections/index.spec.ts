@@ -328,3 +328,70 @@ describe("connectionsController import-session", () => {
     expect(res.status).toBe(422);
   });
 });
+
+describe("connectionsController connection state", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+  });
+
+  const stateRequest = (phone: string) =>
+    new Request(`http://localhost/connections/${phone}`, { method: "GET" });
+
+  it("reports the live state so a consumer can stop guessing", async () => {
+    const spy = spyOn(baileys, "getConnectionState").mockReturnValue({
+      connection: "open",
+      disconnect: null,
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(stateRequest("+551234567890"));
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        data: { connection: string; disconnect: unknown };
+      };
+      expect(body.data.connection).toBe("open");
+      expect(body.data.disconnect).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("carries the reason when the socket is down", async () => {
+    const spy = spyOn(baileys, "getConnectionState").mockReturnValue({
+      connection: "close",
+      disconnect: { statusCode: 401, reason: "logged_out" },
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(stateRequest("+551234567890"));
+
+      const body = (await res.json()) as {
+        data: { disconnect: { reason: string } };
+      };
+      expect(body.data.disconnect.reason).toBe("logged_out");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns 404 when this instance holds no connection", async () => {
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(stateRequest("+551234567890"));
+
+    expect(res.status).toBe(404);
+  });
+});

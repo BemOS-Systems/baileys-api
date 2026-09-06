@@ -375,6 +375,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).getReachoutTimelock();
   }
 
+  getConnectionState(phoneNumber: string) {
+    return this.getConnection(phoneNumber).state;
+  }
+
   getNewChatMessageCap(phoneNumber: string) {
     return this.getConnection(phoneNumber).getNewChatMessageCap();
   }

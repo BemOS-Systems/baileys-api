@@ -34,6 +34,7 @@ import {
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
+  ConnectionStateSnapshot,
   DisconnectInfo,
   MessageKeyWithId,
 } from "@/baileys/types";
@@ -173,7 +174,7 @@ export class BaileysConnection {
     "settings.update",
   ];
 
-  private phoneNumber: string;
+  readonly phoneNumber: string;
   private clientName: string;
   private webhookUrl: string;
   private webhookVerifyToken: string;
@@ -193,6 +194,13 @@ export class BaileysConnection {
   // Noise candidates only while they have never opened; a close after opening
   // is a normal disconnect, not a wrong-key handshake failure.
   private hasOpened = false;
+  // The last `connection` value this socket reported to the webhook, and the
+  // reason behind it when that was a drop. Recorded on the way out (see
+  // sendToWebhook) so every path that narrates state — the raw update, a
+  // reconnect cycle, a wrong-number open — keeps it current without each
+  // remembering to. Exposed through `state` for GET /connections/:phone.
+  private connectionState: WAConnectionState | null = null;
+  private lastDisconnect: DisconnectInfo | null = null;
   private _inFlightWebhooks = 0;
   private leaseEpoch: number | null = null;
   // Monotonic timestamp of the last message-level traffic (received message,
@@ -1563,6 +1571,30 @@ export class BaileysConnection {
   // Counts deliveries (including their retry windows) still running in this
   // process's memory. Graceful shutdown waits on this before exiting so a
   // handoff doesn't drop events that WhatsApp already considers delivered.
+  get state(): ConnectionStateSnapshot {
+    return {
+      connection: this.connectionState,
+      disconnect: this.lastDisconnect,
+    };
+  }
+
+  private recordState(data: BaileysConnectionWebhookPayload["data"]) {
+    const { connection, disconnect } = data as {
+      connection?: WAConnectionState;
+      disconnect?: DisconnectInfo;
+    };
+    if (connection) {
+      this.connectionState = connection;
+      // A healthy open ends the outage; the reason that started it is history.
+      if (connection === "open") {
+        this.lastDisconnect = null;
+      }
+    }
+    if (disconnect) {
+      this.lastDisconnect = disconnect;
+    }
+  }
+
   private async sendToWebhook(
     payload: BaileysConnectionWebhookPayload,
     options?: {
@@ -1573,6 +1605,9 @@ export class BaileysConnection {
     // discard late events from a previous owner (last-writer-wins on the
     // chatwoot side would otherwise let a stale "reconnecting" overwrite the
     // new owner's "open").
+    if (payload.event === "connection.update") {
+      this.recordState(payload.data);
+    }
     let enriched = payload;
     if (payload.event === "connection.update" && this.leaseEpoch !== null) {
       enriched = {

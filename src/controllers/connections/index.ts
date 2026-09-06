@@ -145,6 +145,77 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get(
+    "/:phoneNumber",
+    ({ params, set }) => {
+      const { phoneNumber } = params;
+
+      try {
+        return { data: baileys.getConnectionState(phoneNumber) };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          set.status = 404;
+          return {
+            error: "Not Found",
+            message: "Phone number not connected",
+          };
+        }
+        throw e;
+      }
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        description:
+          "What the socket is doing right now, as last reported to the webhook. For a consumer that lost a webhook — or never got one, because a healthy socket has nothing new to say — this is the way to ask instead of guessing. A 404 means this instance holds no connection for the number at all.",
+        responses: {
+          200: {
+            description: "Current connection state",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        connection: {
+                          type: "string",
+                          nullable: true,
+                          enum: ["connecting", "reconnecting", "open", "close"],
+                          description:
+                            "Last state reported; null before the first update",
+                          example: "open",
+                        },
+                        disconnect: {
+                          type: "object",
+                          nullable: true,
+                          description:
+                            "Why the socket last closed; null once it is open again",
+                          properties: {
+                            statusCode: {
+                              type: "integer",
+                              nullable: true,
+                              example: 440,
+                            },
+                            reason: {
+                              type: "string",
+                              example: "connection_replaced",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Phone number not connected" },
+        },
+      },
+    },
+  )
   .post(
     "/:phoneNumber/import-session",
     async ({ params, body, apiKeyHash, set }) => {
