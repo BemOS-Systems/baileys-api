@@ -16,7 +16,11 @@ import * as baileysModule from "@whiskeysockets/baileys";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import redis from "@/lib/redis";
-import { BaileysConnection, BaileysNotConnectedError } from "./connection";
+import {
+  BaileysConnection,
+  BaileysNotConnectedError,
+  disconnectInfo,
+} from "./connection";
 
 const mockSocket = (baileysModule as any).__mockSocket;
 const mockEventHandlers = (baileysModule as any).__mockEventHandlers;
@@ -2127,6 +2131,80 @@ describe("BaileysConnection", () => {
       // Should not throw
       await handler([{ key: { id: "msg-1" }, update: {} }]);
       await flushAsync();
+    });
+  });
+
+  describe("disconnect reason", () => {
+    const closeWith = (statusCode: number, message: string) => ({
+      connection: "close" as const,
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode,
+            payload: { statusCode, error: "Unknown", message },
+          },
+          message,
+        },
+      },
+    });
+
+    it("names the reason from the status code, never from the message", () => {
+      expect(disconnectInfo(440, "Stream Errored (conflict)")).toEqual({
+        statusCode: 440,
+        reason: "connection_replaced",
+      });
+      expect(disconnectInfo(401, "logged out")).toEqual({
+        statusCode: 401,
+        reason: "logged_out",
+      });
+      expect(disconnectInfo(undefined, "QR refs attempts ended")).toEqual({
+        statusCode: null,
+        reason: "qr_refs_ended",
+      });
+      expect(disconnectInfo(999, "whatever")).toEqual({
+        statusCode: 999,
+        reason: "unknown",
+      });
+    });
+
+    it("carries the reason on the reconnecting webhook", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await handler(closeWith(440, "Stream Errored (conflict)"));
+
+      const reconnecting = fetchCalls
+        .map((c) => JSON.parse(c.body))
+        .find((b) => b.data?.connection === "reconnecting");
+      expect(reconnecting?.data.disconnect).toEqual({
+        statusCode: 440,
+        reason: "connection_replaced",
+      });
+    });
+
+    it("carries the reason on a terminal close", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await handler(closeWith(401, "Logged Out"));
+
+      const closed = fetchCalls
+        .map((c) => JSON.parse(c.body))
+        .find((b) => b.data?.connection === "close");
+      expect(closed?.data.disconnect).toEqual({
+        statusCode: 401,
+        reason: "logged_out",
+      });
+    });
+
+    it("sends no disconnect field when reconnecting after a fresh login", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await handler({ connection: "close" as const, isNewLogin: true });
+
+      const reconnecting = fetchCalls
+        .map((c) => JSON.parse(c.body))
+        .find((b) => b.data?.connection === "reconnecting");
+      expect(reconnecting).toBeDefined();
+      expect(reconnecting?.data.disconnect).toBeUndefined();
     });
   });
 });
