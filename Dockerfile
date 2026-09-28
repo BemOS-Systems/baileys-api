@@ -13,6 +13,10 @@ COPY . .
 
 FROM base AS release
 
+# Auth is skipped when NODE_ENV is development (the config default), so the
+# image must never fall back to it.
+ENV NODE_ENV=production
+
 # NOTE: The Sharp image processing library can leak memory when used in containers due to issues with glibc's malloc.
 # Using jemalloc as the memory allocator (via LD_PRELOAD) mitigates these leaks and improves stability.
 RUN apk add --no-cache jemalloc
