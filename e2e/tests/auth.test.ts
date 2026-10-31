@@ -2,7 +2,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { api, connect, keys, newPhone } from "../support/harness";
 
-const unauthorized = { error: "Unauthorized", message: "Valid API key required" };
+const unauthorized = {
+  error: "Unauthorized",
+  message: "Valid API key required",
+};
 
 describe("fail-closed API-key auth", () => {
   const phone = newPhone();
@@ -48,16 +51,13 @@ describe("fail-closed API-key auth", () => {
   // unauthenticated caller gets 422 (echoing the schema violation) instead of
   // 401. src/middlewares/auth.ts:63 checks auth in onBeforeHandle, which
   // Elysia runs after params/body validation.
-  test.todo(
-    "KNOWN BUG: an invalid body without a key is rejected with 401, not 422",
-    async () => {
-      const res = await api("POST", `/connections/${phone}/send-message`, {
-        key: null,
-        body: {},
-      });
-      expect(res.status).toBe(401);
-    },
-  );
+  test.todo("KNOWN BUG: an invalid body without a key is rejected with 401, not 422", async () => {
+    const res = await api("POST", `/connections/${phone}/send-message`, {
+      key: null,
+      body: {},
+    });
+    expect(res.status).toBe(401);
+  });
 });
 
 describe("admin guard", () => {
@@ -110,12 +110,18 @@ describe("connection ownership", () => {
         [
           "POST",
           `/connections/${phone}/send-message`,
-          { jid: "5511988887777@s.whatsapp.net", messageContent: { text: "x" } },
+          {
+            jid: "5511988887777@s.whatsapp.net",
+            messageContent: { text: "x" },
+          },
         ],
         [
           "POST",
           `/connections/${phone}`,
-          { webhookUrl: "http://tests:4000/hook/steal", webhookVerifyToken: "steal1" },
+          {
+            webhookUrl: "http://tests:4000/hook/steal",
+            webhookVerifyToken: "steal1",
+          },
         ],
         ["DELETE", `/connections/${phone}`],
       ];

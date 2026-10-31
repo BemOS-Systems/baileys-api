@@ -33,7 +33,10 @@ const routes: Route[] = [
     action: "chat-modify",
     body: {
       jid: J,
-      mod: { markRead: true, lastMessages: [{ key: KEY, messageTimestamp: 1 }] },
+      mod: {
+        markRead: true,
+        lastMessages: [{ key: KEY, messageTimestamp: 1 }],
+      },
     },
   },
   {
@@ -68,7 +71,10 @@ const routes: Route[] = [
   {
     method: "POST",
     action: "update-profile-picture",
-    body: { jid: J, image: Buffer.from("not really a jpeg").toString("base64") },
+    body: {
+      jid: J,
+      image: Buffer.from("not really a jpeg").toString("base64"),
+    },
   },
   {
     method: "POST",

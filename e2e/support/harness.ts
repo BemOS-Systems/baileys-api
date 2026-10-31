@@ -43,7 +43,6 @@ export interface ApiResponse {
   status: number;
   headers: Headers;
   text: string;
-  // biome-ignore lint/suspicious/noExplicitAny: response bodies are untyped JSON
   json: any;
 }
 
@@ -119,7 +118,6 @@ export interface Delivery {
   hook: string;
   at: number;
   contentType: string | null;
-  // biome-ignore lint/suspicious/noExplicitAny: webhook payloads are untyped JSON
   body: any;
 }
 

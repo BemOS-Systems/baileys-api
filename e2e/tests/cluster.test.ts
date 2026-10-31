@@ -148,7 +148,10 @@ describe("lease-owner routing", () => {
       `/connections/${phone}/send-message`,
       {
         base: workers[other],
-        body: { jid: "5511988887777@s.whatsapp.net", messageContent: { text: "x" } },
+        body: {
+          jid: "5511988887777@s.whatsapp.net",
+          messageContent: { text: "x" },
+        },
       },
     );
     expect(misdirected.status).toBe(421);

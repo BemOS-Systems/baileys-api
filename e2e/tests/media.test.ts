@@ -13,9 +13,9 @@ afterAll(async () => {
 
 describe("GET /media/:messageId", () => {
   test("401 without a key", async () => {
-    expect((await api("GET", `/media/${messageId}`, { key: null })).status).toBe(
-      401,
-    );
+    expect(
+      (await api("GET", `/media/${messageId}`, { key: null })).status,
+    ).toBe(401);
   });
 
   test("422 for an id outside [A-Z0-9]{1,64}", async () => {
