@@ -1,0 +1,151 @@
+# Hermetic black-box e2e stack for baileys-api. Run it through e2e/run.sh,
+# which builds the image this file names and drives the whole cycle.
+#
+# Two independent deployments of the same image, each on its own Redis:
+#   - baileys: the standalone role Bem OS talks to today.
+#   - proxy + worker-1 + worker-2: the cluster role (lease-owner proxying).
+# The network is internal, so the SUT never reaches WhatsApp: every socket
+# fails at DNS and the gateway reports that through its webhooks. The tests
+# act as Rails: they call the HTTP API and receive webhooks on tests:4000.
+#
+# Nothing is published on the host and no service sets container_name, so it
+# never collides with the bem-os_* / bem-plantao_* stacks on the same box.
+name: baileys-api-e2e
+
+x-sut-env: &sut-env
+  NODE_ENV: production
+  LOG_LEVEL: debug
+  BAILEYS_LOG_LEVEL: warn
+  # Fast retries so a flaky-receiver test does not wait the 5s default.
+  WEBHOOK_RETRY_POLICY_MAX_RETRIES: "1"
+  WEBHOOK_RETRY_POLICY_RETRY_INTERVAL: "200"
+  WEBHOOK_RETRY_POLICY_BACKOFF_FACTOR: "1"
+  MEDIA_CLEANUP_ENABLED: "false"
+
+x-sut: &sut
+  image: ${E2E_SUT_IMAGE:-baileys-api-e2e/sut:dev}
+  pull_policy: never # built by run.sh
+  # The image ships no CMD (deploy tooling injects it).
+  command: ["bun", "start"]
+  networks: [e2e]
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
+    interval: 1s
+    retries: 60
+
+x-cluster-env: &cluster-env
+  <<: *sut-env
+  REDIS_URL: redis://redis-cluster:6379
+  CLUSTER_HEARTBEAT_INTERVAL_MS: "1000"
+  CLUSTER_INSTANCE_TTL_MS: "3000"
+  CLUSTER_CLAIM_INTERVAL_MS: "1000"
+  CLUSTER_CLAIM_JITTER_MS: "0"
+  # Placement must stay put while a test looks at it.
+  CLUSTER_REBALANCE_ENABLED: "false"
+  PROXY_ROUTE_CACHE_TTL_MS: "1000"
+  PROXY_MAX_BODY_BYTES: "65536"
+
+x-redis: &redis
+  image: redis:8-alpine
+  networks: [e2e]
+  tmpfs: [/data]
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 1s
+    retries: 30
+
+services:
+  # The standalone instance's Redis requires a password, so GET /status can be
+  # checked for leaking a real secret.
+  redis:
+    <<: *redis
+    command: ["redis-server", "--requirepass", "e2e-redis-secret"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "e2e-redis-secret", "--no-auth-warning", "ping"]
+      interval: 1s
+      retries: 30
+
+  redis-cluster:
+    <<: *redis
+
+  baileys:
+    <<: *sut
+    environment:
+      <<: *sut-env
+      REDIS_URL: redis://redis:6379
+      REDIS_PASSWORD: e2e-redis-secret
+    volumes:
+      # Shared with the runner: media is only ever written by a paired
+      # socket, so the tests drop a file here to exercise GET /media.
+      - media:/usr/src/app/media
+    depends_on:
+      redis: { condition: service_healthy }
+
+  proxy:
+    <<: *sut
+    environment:
+      <<: *cluster-env
+      ROLE: proxy
+    depends_on:
+      redis-cluster: { condition: service_healthy }
+
+  worker-1:
+    <<: *sut
+    environment:
+      <<: *cluster-env
+      ROLE: worker
+      INSTANCE_ID: worker-1
+      WORKER_BASE_URL: http://worker-1:3025
+    volumes:
+      - media-worker-1:/usr/src/app/media
+    depends_on:
+      redis-cluster: { condition: service_healthy }
+
+  worker-2:
+    <<: *sut
+    environment:
+      <<: *cluster-env
+      ROLE: worker
+      INSTANCE_ID: worker-2
+      WORKER_BASE_URL: http://worker-2:3025
+    depends_on:
+      redis-cluster: { condition: service_healthy }
+
+  # The test runner. Also the webhook receiver: Bun.serve on tests:4000.
+  tests:
+    image: oven/bun:1-alpine # same tag as the Dockerfile
+    profiles: [test]
+    hostname: tests
+    user: ${E2E_UID:-1000}:${E2E_GID:-1000}
+    networks: [e2e]
+    working_dir: /e2e
+    command: ["bun", "test"]
+    environment:
+      HOME: /tmp
+      BUN_INSTALL_CACHE_DIR: /tmp/bun-cache
+      BAILEYS_URL: http://baileys:3025
+      PROXY_URL: http://proxy:3025
+      WORKER_1_URL: http://worker-1:3025
+      WORKER_2_URL: http://worker-2:3025
+      E2E_REDIS_PASSWORD: e2e-redis-secret
+      REDIS_CLUSTER_URL: redis://redis-cluster:6379
+      WEBHOOK_BASE_URL: http://tests:4000
+      WEBHOOK_PORT: "4000"
+      MEDIA_DIR: /sut-media
+      WORKER_1_MEDIA_DIR: /sut-media-worker-1
+      E2E_USER_KEY: e2e-user-key
+      E2E_USER2_KEY: e2e-user2-key
+      E2E_ADMIN_KEY: e2e-admin-key
+      E2E_REVOKED_KEY: e2e-revoked-key
+    volumes:
+      - ./:/e2e:ro
+      - media:/sut-media
+      - media-worker-1:/sut-media-worker-1
+
+networks:
+  e2e:
+    internal: true
+
+volumes:
+  media:
+  media-worker-1:

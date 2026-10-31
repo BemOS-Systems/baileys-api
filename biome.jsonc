@@ -1,7 +1,12 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
   "files": {
-    "includes": ["src/**/*.ts", "scripts/**/*.ts", "git-hooks.config.ts"]
+    "includes": [
+      "src/**/*.ts",
+      "scripts/**/*.ts",
+      "e2e/**/*.ts",
+      "git-hooks.config.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -43,11 +48,11 @@
         "noConsole": { "level": "off", "options": { "allow": ["log"] } }
       }
     },
-    "includes": ["src/**/*.ts"]
+    "includes": ["src/**/*.ts", "e2e/**/*.ts"]
   },
   "overrides": [
     {
-      "includes": ["src/**/*.spec.ts", "src/test/**/*.ts"],
+      "includes": ["src/**/*.spec.ts", "src/test/**/*.ts", "e2e/**/*.ts"],
       "linter": {
         "rules": {
           "suspicious": {
