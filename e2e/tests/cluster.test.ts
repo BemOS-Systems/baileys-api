@@ -24,12 +24,33 @@ const health = async (base: string) =>
   (await api("GET", "/cluster/health", { base, key: null })).json;
 
 // Where the proxy placed a phone, read from the workers' own answers: the
-// owner serves the state, the other one redirects with 421.
+// owner serves the state (200) and the other one redirects to it (421 +
+// x-baileys-owner). Anything else is a routing failure, not an answer.
 async function ownerOf(phone: string): Promise<WorkerId> {
-  const res = await api("GET", `/connections/${phone}`, {
-    base: urls.worker1,
-  });
-  return res.status === 421 ? "worker-2" : "worker-1";
+  const answers = await Promise.all(
+    (Object.keys(workers) as WorkerId[]).map(async (id) => {
+      const res = await api("GET", `/connections/${phone}`, {
+        base: workers[id],
+      });
+      return {
+        id,
+        status: res.status,
+        owner: res.headers.get("x-baileys-owner"),
+      };
+    }),
+  );
+  const owners = answers.filter((a) => a.status === 200);
+  const redirects = answers.filter((a) => a.status === 421);
+  if (
+    owners.length !== 1 ||
+    redirects.length !== 1 ||
+    redirects[0].owner !== owners[0].id
+  ) {
+    throw new Error(
+      `no single lease owner for ${phone}: ${JSON.stringify(answers)}`,
+    );
+  }
+  return owners[0].id;
 }
 
 const redis = clusterRedis();
