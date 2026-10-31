@@ -1,0 +1,4 @@
+# The e2e suite runs from this directory inside the runner container, so this
+# file (not the repo-root one, whose preload mocks Redis and Baileys) applies.
+[test]
+root = "tests"
