@@ -49,7 +49,7 @@ describe("fail-closed API-key auth", () => {
 
   // KNOWN BUG: TypeBox validation runs before the auth beforeHandle, so an
   // unauthenticated caller gets 422 (echoing the schema violation) instead of
-  // 401. src/middlewares/auth.ts:63 checks auth in onBeforeHandle, which
+  // 401. src/middlewares/auth.ts:60 checks auth in onBeforeHandle, which
   // Elysia runs after params/body validation.
   test.todo("KNOWN BUG: an invalid body without a key is rejected with 401, not 422", async () => {
     const res = await api("POST", `/connections/${phone}/send-message`, {
